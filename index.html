@@ -5,19 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Зарплата</title>
     <style>
-        :root { --bg: #121212; --surface: #1e1e1e; --primary: #03dac6; --text: #ffffff; --danger: #cf6679; }
+        :root { --bg: #121212; --surface: #1e1e1e; --primary: #03dac6; --secondary: #bb86fc; --text: #ffffff; --danger: #cf6679; }
         body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
         .screen { display: none; }
         .screen.active { display: block; }
         button { display: block; width: 100%; padding: 15px; margin-bottom: 10px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; background: var(--surface); color: var(--primary); }
         button.action { background: var(--primary); color: #000; }
+        button.callout { background: var(--secondary); color: #000; }
         button.danger { background: var(--danger); color: #000; }
         input, select { width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 8px; border: 1px solid #333; background: #000; color: #fff; font-size: 16px; box-sizing: border-box; }
         input[type="date"] { color-scheme: dark; }
         .card { background: var(--surface); padding: 15px; border-radius: 8px; margin-bottom: 15px; }
         .header { font-size: 20px; font-weight: bold; margin-bottom: 20px; text-align: center; color: var(--primary); }
         hr { border: 0; border-top: 1px solid #333; margin: 15px 0; }
-        .shift-history { background: #2a2a2a; padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 14px; }
+        .shift-history { background: #2a2a2a; padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 14px; border-left: 4px solid var(--primary); }
+        .shift-history.callout { border-left: 4px solid var(--secondary); }
         .shift-history-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
         .btn-del { width: 40px; padding: 5px; margin: 0; background: var(--danger); color: #fff; font-size: 12px; border-radius: 4px; }
     </style>
@@ -29,9 +31,10 @@
         <div class="header">Розрахунок ЗП</div>
         <div class="card" id="menu-stats">Відпрацьовано змін: 0</div>
         <button class="action" onclick="openShiftScreen()">➕ Додати зміну</button>
+        <button class="callout" onclick="openCalloutScreen()">🚨 Вихід на вихідному</button>
         <button onclick="nav('screen-summary'); calcSummary();">🧮 Підсумок та Історія</button>
         <button onclick="nav('screen-settings'); loadSettings();">⚙️ Налаштування</button>
-        <button onclick="exportData()">💾 Зберегти бекап (JSON)</button>
+        <button onclick="exportData()">💾 Зберегти бекап</button>
         <button onclick="document.getElementById('import-file').click()">📂 Завантажити бекап</button>
         <input type="file" id="import-file" style="display:none" onchange="importData(event)" accept=".json">
         <button class="danger" onclick="resetMonth()">🗑 Скинути місяць</button>
@@ -50,6 +53,17 @@
         <input type="number" id="set-deduction" placeholder="0">
         
         <button class="action" onclick="saveSettings()">Зберегти</button>
+        <button onclick="nav('screen-menu')">Скасувати</button>
+    </div>
+
+    <!-- ДОДАТИ ВИХІДНИЙ -->
+    <div id="screen-callout" class="screen">
+        <div class="header" style="color: var(--secondary);">Вихід поза зміною</div>
+        <label>Дата виходу:</label>
+        <input type="date" id="callout-date">
+        <label>Сума доплати за цей вихід (грн):</label>
+        <input type="number" id="callout-amount" placeholder="Наприклад: 1500">
+        <button class="callout" onclick="saveCallout()">💾 Зберегти вихід</button>
         <button onclick="nav('screen-menu')">Скасувати</button>
     </div>
 
@@ -95,16 +109,18 @@
     </div>
 
 <script>
-    let db = JSON.parse(localStorage.getItem('zp_data')) || { 
-        base_monthly: 25000, 
-        norm_shifts: 8, 
-        tax_percent: 19.5,
-        fixed_deduction: 0,
-        shifts: [] 
-    };
+    let db = JSON.parse(localStorage.getItem('zp_data')) || {};
     
+    // Міграція та дефолти
+    if (typeof db.base_monthly === 'undefined') db.base_monthly = 25000;
+    if (typeof db.norm_shifts === 'undefined') db.norm_shifts = 8;
     if (typeof db.tax_percent === 'undefined') db.tax_percent = (db.is_official !== false) ? 19.5 : 0;
     if (typeof db.fixed_deduction === 'undefined') db.fixed_deduction = 0;
+    // Видаляємо старий callout_tariff з бази, якщо він там був
+    if (typeof db.callout_tariff !== 'undefined') delete db.callout_tariff;
+    
+    if (typeof db.shifts === 'undefined') db.shifts = [];
+    if (typeof db.call_outs === 'undefined') db.call_outs = [];
 
     let currentShift = { date: '', pr_minutes: 0, extras: [] };
 
@@ -123,7 +139,8 @@
     }
 
     function updateMenuStats() {
-        document.getElementById('menu-stats').innerText = `Відпрацьовано змін: ${db.shifts.length} \n(Норма: ${db.norm_shifts})`;
+        let calls = db.call_outs.length;
+        document.getElementById('menu-stats').innerText = `Змін: ${db.shifts.length} (Норма: ${db.norm_shifts})\nПоза зміною: ${calls}`;
     }
 
     function loadSettings() {
@@ -142,6 +159,34 @@
         nav('screen-menu');
     }
 
+    // ЛОГІКА ВИКЛИКУ ПОЗА ЗМІНОЮ
+    function openCalloutScreen() {
+        document.getElementById('callout-date').value = new Date().toISOString().split('T')[0];
+        document.getElementById('callout-amount').value = '';
+        nav('screen-callout');
+    }
+
+    function saveCallout() {
+        let amount = parseFloat(document.getElementById('callout-amount').value) || 0;
+        if (amount <= 0) return alert("Введи коректну суму.");
+        
+        db.call_outs.push({
+            date: document.getElementById('callout-date').value,
+            amount: amount
+        });
+        saveDB();
+        nav('screen-menu');
+    }
+
+    function deleteCallout(index) {
+        if (confirm("Точно видалити цей виклик?")) {
+            db.call_outs.splice(index, 1);
+            saveDB();
+            calcSummary(); 
+        }
+    }
+
+    // ЛОГІКА ЗВИЧАЙНОЇ ЗМІНИ
     function openShiftScreen() {
         document.getElementById('shift-date').value = new Date().toISOString().split('T')[0];
         document.getElementById('shift-pr').value = '';
@@ -197,23 +242,21 @@
         if (confirm("Точно видалити цю зміну?")) {
             db.shifts.splice(index, 1);
             saveDB();
-            calcSummary(); // Оновлюємо екран підсумку
+            calcSummary();
         }
     }
 
+    // ПІДСУМОК
     function calcSummary() {
         let actual_shifts = db.shifts.length;
-        if (actual_shifts === 0) {
-            document.getElementById('summary-result').innerHTML = "Немає даних.";
-            return;
-        }
-
         let emergency = document.getElementById('sum-emergency').value === 'yes';
         let total_pr_mins = 0;
         let total_extras = 0;
+        let total_callouts = 0;
 
         let historyHTML = "<hr><div style='color: var(--primary); font-weight: bold; margin-bottom: 10px;'>📅 Історія змін:</div>";
 
+        // Рендер звичайних змін
         db.shifts.forEach((s, index) => {
             let pr = s.pr_minutes || 0;
             let extSum = 0;
@@ -240,13 +283,27 @@
             </div>`;
         });
 
+        // Рендер викликів
+        db.call_outs.forEach((c, index) => {
+            total_callouts += c.amount || 0;
+            let dateText = c.date ? c.date.split('-').reverse().join('.') : 'Без дати';
+            historyHTML += `
+            <div class="shift-history callout">
+                <div class="shift-history-header">
+                    <b style="color: var(--secondary);">${dateText} (Поза зміною)</b>
+                    <button class="btn-del" onclick="deleteCallout(${index})">❌</button>
+                </div>
+                <div>Сума: ${c.amount} грн</div>
+            </div>`;
+        });
+
         let total_pr_hours = total_pr_mins / 60;
         let shift_price = db.base_monthly / db.norm_shifts;
         let actual_base = shift_price * actual_shifts;
         let actual_bonus = emergency ? 0 : BONUS;
         let pr_money = total_pr_hours * PR_RATE;
 
-        let gross = actual_base + actual_bonus + pr_money + total_extras;
+        let gross = actual_base + actual_bonus + pr_money + total_extras + total_callouts;
         
         let tax_rate = db.tax_percent / 100;
         let tax_amount = gross * tax_rate;
@@ -258,19 +315,21 @@
             База (${actual_shifts} * ${shift_price.toFixed(0)}): <b>${actual_base.toFixed(0)} грн</b><br>
             ПР (${total_pr_hours.toFixed(2)} год): <b>${pr_money.toFixed(0)} грн</b><br>
             Допи: <b>${total_extras.toFixed(0)} грн</b><br>
+            Поза зміною: <b style="color: var(--secondary);">${total_callouts.toFixed(0)} грн</b><br>
             Премія: <b>${actual_bonus} грн</b><br>
             <hr>
             Брудними: <b>${gross.toFixed(0)} грн</b><br>
             Відсоток (${db.tax_percent}%): <b>-${tax_amount.toFixed(0)} грн</b><br>
             Утримання: <b>-${deduction.toFixed(0)} грн</b><br>
             <h3 style="margin: 10px 0 0 0; color: var(--primary);">НА РУКИ: ${net.toFixed(0)} грн</h3>
-            ${historyHTML}
+            ${db.shifts.length || db.call_outs.length ? historyHTML : 'Немає даних.'}
         `;
     }
 
     function resetMonth() {
-        if (confirm("Точно видалити всі зміни за місяць?")) {
+        if (confirm("Точно видалити всі зміни та виклики за місяць?")) {
             db.shifts = [];
+            db.call_outs = [];
             saveDB();
         }
     }
@@ -292,10 +351,9 @@
         reader.onload = function(e) {
             try {
                 let parsed = JSON.parse(e.target.result);
-                if (typeof parsed.tax_percent === 'undefined') {
-                    parsed.tax_percent = (parsed.is_official !== false) ? 19.5 : 0;
-                }
+                if (typeof parsed.tax_percent === 'undefined') parsed.tax_percent = 19.5;
                 if (typeof parsed.fixed_deduction === 'undefined') parsed.fixed_deduction = 0;
+                if (typeof parsed.call_outs === 'undefined') parsed.call_outs = [];
                 
                 db = parsed;
                 saveDB();
