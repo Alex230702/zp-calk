@@ -47,6 +47,8 @@
         <input type="number" id="set-base" placeholder="25000">
         <label>Норма змін:</label>
         <input type="number" id="set-norm" placeholder="8">
+        <label>Тариф ПР (грн/год):</label>
+        <input type="number" id="set-pr-rate" placeholder="150">
         <label>Відсоток податку/зборів (%):</label>
         <input type="number" id="set-tax-percent" step="0.1" placeholder="19.5">
         <label>Фіксовані утримання (грн/місяць):</label>
@@ -114,9 +116,9 @@
     // Міграція та дефолти
     if (typeof db.base_monthly === 'undefined') db.base_monthly = 25000;
     if (typeof db.norm_shifts === 'undefined') db.norm_shifts = 8;
+    if (typeof db.pr_rate === 'undefined') db.pr_rate = 150;
     if (typeof db.tax_percent === 'undefined') db.tax_percent = (db.is_official !== false) ? 19.5 : 0;
     if (typeof db.fixed_deduction === 'undefined') db.fixed_deduction = 0;
-    // Видаляємо старий callout_tariff з бази, якщо він там був
     if (typeof db.callout_tariff !== 'undefined') delete db.callout_tariff;
     
     if (typeof db.shifts === 'undefined') db.shifts = [];
@@ -124,7 +126,6 @@
 
     let currentShift = { date: '', pr_minutes: 0, extras: [] };
 
-    const PR_RATE = 150;
     const BONUS = 2000;
 
     function saveDB() {
@@ -146,6 +147,7 @@
     function loadSettings() {
         document.getElementById('set-base').value = db.base_monthly;
         document.getElementById('set-norm').value = db.norm_shifts;
+        document.getElementById('set-pr-rate').value = db.pr_rate;
         document.getElementById('set-tax-percent').value = db.tax_percent;
         document.getElementById('set-deduction').value = db.fixed_deduction;
     }
@@ -153,6 +155,7 @@
     function saveSettings() {
         db.base_monthly = parseFloat(document.getElementById('set-base').value) || 0;
         db.norm_shifts = parseInt(document.getElementById('set-norm').value) || 1;
+        db.pr_rate = parseFloat(document.getElementById('set-pr-rate').value) || 0;
         db.tax_percent = parseFloat(document.getElementById('set-tax-percent').value) || 0;
         db.fixed_deduction = parseFloat(document.getElementById('set-deduction').value) || 0;
         saveDB();
@@ -301,7 +304,8 @@
         let shift_price = db.base_monthly / db.norm_shifts;
         let actual_base = shift_price * actual_shifts;
         let actual_bonus = emergency ? 0 : BONUS;
-        let pr_money = total_pr_hours * PR_RATE;
+        
+        let pr_money = total_pr_hours * db.pr_rate;
 
         let gross = actual_base + actual_bonus + pr_money + total_extras + total_callouts;
         
@@ -313,7 +317,7 @@
 
         document.getElementById('summary-result').innerHTML = `
             База (${actual_shifts} * ${shift_price.toFixed(0)}): <b>${actual_base.toFixed(0)} грн</b><br>
-            ПР (${total_pr_hours.toFixed(2)} год): <b>${pr_money.toFixed(0)} грн</b><br>
+            ПР (${total_pr_hours.toFixed(2)} год * ${db.pr_rate} грн): <b>${pr_money.toFixed(0)} грн</b><br>
             Допи: <b>${total_extras.toFixed(0)} грн</b><br>
             Поза зміною: <b style="color: var(--secondary);">${total_callouts.toFixed(0)} грн</b><br>
             Премія: <b>${actual_bonus} грн</b><br>
@@ -353,6 +357,7 @@
                 let parsed = JSON.parse(e.target.result);
                 if (typeof parsed.tax_percent === 'undefined') parsed.tax_percent = 19.5;
                 if (typeof parsed.fixed_deduction === 'undefined') parsed.fixed_deduction = 0;
+                if (typeof parsed.pr_rate === 'undefined') parsed.pr_rate = 150;
                 if (typeof parsed.call_outs === 'undefined') parsed.call_outs = [];
                 
                 db = parsed;
