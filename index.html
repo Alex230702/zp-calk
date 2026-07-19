@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Зарплата</title>
+    <style>
+        :root { --bg: #121212; --surface: #1e1e1e; --primary: #03dac6; --text: #ffffff; --danger: #cf6679; }
+        body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+        .screen { display: none; }
+        .screen.active { display: block; }
+        button { display: block; width: 100%; padding: 15px; margin-bottom: 10px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; background: var(--surface); color: var(--primary); }
+        button.action { background: var(--primary); color: #000; }
+        button.danger { background: var(--danger); color: #000; }
+        input, select { width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 8px; border: 1px solid #333; background: #000; color: #fff; font-size: 16px; box-sizing: border-box; }
+        input[type="date"] { color-scheme: dark; }
+        .card { background: var(--surface); padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .header { font-size: 20px; font-weight: bold; margin-bottom: 20px; text-align: center; color: var(--primary); }
+        hr { border: 0; border-top: 1px solid #333; margin: 15px 0; }
+        .shift-history { background: #2a2a2a; padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 14px; }
+        .shift-history-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+        .btn-del { width: 40px; padding: 5px; margin: 0; background: var(--danger); color: #fff; font-size: 12px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <!-- ГОЛОВНЕ МЕНЮ -->
+    <div id="screen-menu" class="screen active">
+        <div class="header">Розрахунок ЗП</div>
+        <div class="card" id="menu-stats">Відпрацьовано змін: 0</div>
+        <button class="action" onclick="openShiftScreen()">➕ Додати зміну</button>
+        <button onclick="nav('screen-summary'); calcSummary();">🧮 Підсумок та Історія</button>
+        <button onclick="nav('screen-settings'); loadSettings();">⚙️ Налаштування</button>
+        <button onclick="exportData()">💾 Зберегти бекап (JSON)</button>
+        <button onclick="document.getElementById('import-file').click()">📂 Завантажити бекап</button>
+        <input type="file" id="import-file" style="display:none" onchange="importData(event)" accept=".json">
+        <button class="danger" onclick="resetMonth()">🗑 Скинути місяць</button>
+    </div>
+
+    <!-- НАЛАШТУВАННЯ -->
+    <div id="screen-settings" class="screen">
+        <div class="header">Налаштування</div>
+        <label>Базова ЗП за норму:</label>
+        <input type="number" id="set-base" placeholder="25000">
+        <label>Норма змін:</label>
+        <input type="number" id="set-norm" placeholder="8">
+        <label>Відсоток податку/зборів (%):</label>
+        <input type="number" id="set-tax-percent" step="0.1" placeholder="19.5">
+        <label>Фіксовані утримання (грн/місяць):</label>
+        <input type="number" id="set-deduction" placeholder="0">
+        
+        <button class="action" onclick="saveSettings()">Зберегти</button>
+        <button onclick="nav('screen-menu')">Скасувати</button>
+    </div>
+
+    <!-- ДОДАТИ ЗМІНУ: ПР -->
+    <div id="screen-pr" class="screen">
+        <div class="header">Крок 1: Дата та ПР</div>
+        <label>Дата зміни:</label>
+        <input type="date" id="shift-date">
+        <label>Хвилин ПР (можна через +, напр. 15+30):</label>
+        <input type="text" inputmode="tel" id="shift-pr" placeholder="0">
+        <button class="action" onclick="startExtras()">Далі ➡️</button>
+        <button onclick="nav('screen-menu')">Скасувати</button>
+    </div>
+
+    <!-- ДОДАТИ ЗМІНУ: ДОПИ -->
+    <div id="screen-extras" class="screen">
+        <div class="header">Крок 2: Доп. активності</div>
+        <div id="current-extras-list" class="card" style="display:none;"></div>
+        
+        <label>Назва (напр. Сітки):</label>
+        <input type="text" id="extra-name">
+        <label>Сума (грн):</label>
+        <input type="number" id="extra-amount">
+        
+        <button onclick="addExtraToShift()">➕ Додати цей доп</button>
+        <hr>
+        <button class="action" onclick="saveShift()">💾 Зберегти зміну</button>
+        <button onclick="nav('screen-menu')">Скасувати</button>
+    </div>
+
+    <!-- ПІДСУМОК -->
+    <div id="screen-summary" class="screen">
+        <div class="header">Підсумок за місяць</div>
+        <div class="card">
+            <label>Чи були аварії (мінус премія)?</label>
+            <select id="sum-emergency" onchange="calcSummary()">
+                <option value="no">Ні (Премія є)</option>
+                <option value="yes">Так (Без премії)</option>
+            </select>
+        </div>
+        <div class="card" id="summary-result"></div>
+        <button class="action" onclick="nav('screen-menu')">На головну</button>
+    </div>
+
+<script>
+    let db = JSON.parse(localStorage.getItem('zp_data')) || { 
+        base_monthly: 25000, 
+        norm_shifts: 8, 
+        tax_percent: 19.5,
+        fixed_deduction: 0,
+        shifts: [] 
+    };
+    
+    if (typeof db.tax_percent === 'undefined') db.tax_percent = (db.is_official !== false) ? 19.5 : 0;
+    if (typeof db.fixed_deduction === 'undefined') db.fixed_deduction = 0;
+
+    let currentShift = { date: '', pr_minutes: 0, extras: [] };
+
+    const PR_RATE = 150;
+    const BONUS = 2000;
+
+    function saveDB() {
+        localStorage.setItem('zp_data', JSON.stringify(db));
+        updateMenuStats();
+    }
+
+    function nav(screenId) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+        document.getElementById(screenId).classList.add('active');
+        if (screenId === 'screen-menu') updateMenuStats();
+    }
+
+    function updateMenuStats() {
+        document.getElementById('menu-stats').innerText = `Відпрацьовано змін: ${db.shifts.length} \n(Норма: ${db.norm_shifts})`;
+    }
+
+    function loadSettings() {
+        document.getElementById('set-base').value = db.base_monthly;
+        document.getElementById('set-norm').value = db.norm_shifts;
+        document.getElementById('set-tax-percent').value = db.tax_percent;
+        document.getElementById('set-deduction').value = db.fixed_deduction;
+    }
+
+    function saveSettings() {
+        db.base_monthly = parseFloat(document.getElementById('set-base').value) || 0;
+        db.norm_shifts = parseInt(document.getElementById('set-norm').value) || 1;
+        db.tax_percent = parseFloat(document.getElementById('set-tax-percent').value) || 0;
+        db.fixed_deduction = parseFloat(document.getElementById('set-deduction').value) || 0;
+        saveDB();
+        nav('screen-menu');
+    }
+
+    function openShiftScreen() {
+        document.getElementById('shift-date').value = new Date().toISOString().split('T')[0];
+        document.getElementById('shift-pr').value = '';
+        nav('screen-pr');
+    }
+
+    function startExtras() {
+        currentShift.date = document.getElementById('shift-date').value;
+        let prInput = document.getElementById('shift-pr').value.replace(/\s/g, '');
+        let prSum = 0;
+        if (prInput) {
+            prInput.split('+').forEach(num => {
+                prSum += parseInt(num) || 0;
+            });
+        }
+        
+        currentShift.pr_minutes = prSum;
+        currentShift.extras = [];
+        renderCurrentExtras();
+        document.getElementById('extra-name').value = '';
+        document.getElementById('extra-amount').value = '';
+        nav('screen-extras');
+    }
+
+    function addExtraToShift() {
+        let name = document.getElementById('extra-name').value.trim();
+        let amount = parseFloat(document.getElementById('extra-amount').value) || 0;
+        if (!name || amount <= 0) return alert("Введи нормальну назву та суму.");
+        
+        currentShift.extras.push({ name, amount });
+        document.getElementById('extra-name').value = '';
+        document.getElementById('extra-amount').value = '';
+        renderCurrentExtras();
+    }
+
+    function renderCurrentExtras() {
+        let list = document.getElementById('current-extras-list');
+        if (currentShift.extras.length === 0) {
+            list.style.display = 'none';
+        } else {
+            list.style.display = 'block';
+            list.innerHTML = currentShift.extras.map(e => `<div>${e.name}: ${e.amount} грн</div>`).join('');
+        }
+    }
+
+    function saveShift() {
+        db.shifts.push(JSON.parse(JSON.stringify(currentShift)));
+        saveDB();
+        nav('screen-menu');
+    }
+
+    function deleteShift(index) {
+        if (confirm("Точно видалити цю зміну?")) {
+            db.shifts.splice(index, 1);
+            saveDB();
+            calcSummary(); // Оновлюємо екран підсумку
+        }
+    }
+
+    function calcSummary() {
+        let actual_shifts = db.shifts.length;
+        if (actual_shifts === 0) {
+            document.getElementById('summary-result').innerHTML = "Немає даних.";
+            return;
+        }
+
+        let emergency = document.getElementById('sum-emergency').value === 'yes';
+        let total_pr_mins = 0;
+        let total_extras = 0;
+
+        let historyHTML = "<hr><div style='color: var(--primary); font-weight: bold; margin-bottom: 10px;'>📅 Історія змін:</div>";
+
+        db.shifts.forEach((s, index) => {
+            let pr = s.pr_minutes || 0;
+            let extSum = 0;
+            let extNamesArr = [];
+            if (s.extras) {
+                s.extras.forEach(ext => {
+                    extSum += ext.amount || 0;
+                    if(ext.name) extNamesArr.push(ext.name);
+                });
+            }
+            total_pr_mins += pr;
+            total_extras += extSum;
+
+            let extText = extNamesArr.length > 0 ? `(${extNamesArr.join(', ')})` : '';
+            let dateText = s.date ? s.date.split('-').reverse().join('.') : 'Без дати';
+
+            historyHTML += `
+            <div class="shift-history">
+                <div class="shift-history-header">
+                    <b>${dateText}</b>
+                    <button class="btn-del" onclick="deleteShift(${index})">❌</button>
+                </div>
+                <div>ПР: ${pr} хв | Допи: ${extSum} грн ${extText}</div>
+            </div>`;
+        });
+
+        let total_pr_hours = total_pr_mins / 60;
+        let shift_price = db.base_monthly / db.norm_shifts;
+        let actual_base = shift_price * actual_shifts;
+        let actual_bonus = emergency ? 0 : BONUS;
+        let pr_money = total_pr_hours * PR_RATE;
+
+        let gross = actual_base + actual_bonus + pr_money + total_extras;
+        
+        let tax_rate = db.tax_percent / 100;
+        let tax_amount = gross * tax_rate;
+        let deduction = db.fixed_deduction;
+        
+        let net = gross - tax_amount - deduction;
+
+        document.getElementById('summary-result').innerHTML = `
+            База (${actual_shifts} * ${shift_price.toFixed(0)}): <b>${actual_base.toFixed(0)} грн</b><br>
+            ПР (${total_pr_hours.toFixed(2)} год): <b>${pr_money.toFixed(0)} грн</b><br>
+            Допи: <b>${total_extras.toFixed(0)} грн</b><br>
+            Премія: <b>${actual_bonus} грн</b><br>
+            <hr>
+            Брудними: <b>${gross.toFixed(0)} грн</b><br>
+            Відсоток (${db.tax_percent}%): <b>-${tax_amount.toFixed(0)} грн</b><br>
+            Утримання: <b>-${deduction.toFixed(0)} грн</b><br>
+            <h3 style="margin: 10px 0 0 0; color: var(--primary);">НА РУКИ: ${net.toFixed(0)} грн</h3>
+            ${historyHTML}
+        `;
+    }
+
+    function resetMonth() {
+        if (confirm("Точно видалити всі зміни за місяць?")) {
+            db.shifts = [];
+            saveDB();
+        }
+    }
+
+    function exportData() {
+        let dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(db));
+        let downloadAnchorNode = document.createElement('a');
+        downloadAnchorNode.setAttribute("href", dataStr);
+        downloadAnchorNode.setAttribute("download", "zp_backup.json");
+        document.body.appendChild(downloadAnchorNode);
+        downloadAnchorNode.click();
+        downloadAnchorNode.remove();
+    }
+
+    function importData(event) {
+        let file = event.target.files[0];
+        if (!file) return;
+        let reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                let parsed = JSON.parse(e.target.result);
+                if (typeof parsed.tax_percent === 'undefined') {
+                    parsed.tax_percent = (parsed.is_official !== false) ? 19.5 : 0;
+                }
+                if (typeof parsed.fixed_deduction === 'undefined') parsed.fixed_deduction = 0;
+                
+                db = parsed;
+                saveDB();
+                alert("Бекап успішно завантажено!");
+            } catch (err) {
+                alert("Помилка читання файлу.");
+            }
+        };
+        reader.readAsText(file);
+    }
+
+    updateMenuStats();
+</script>
+</body>
+</html>
