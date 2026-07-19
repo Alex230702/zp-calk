@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Зарплата</title>
     <style>
-        :root { --bg: #121212; --surface: #1e1e1e; --primary: #03dac6; --secondary: #bb86fc; --text: #ffffff; --danger: #cf6679; }
+        :root { --bg: #121212; --surface: #1e1e1e; --primary: #03dac6; --secondary: #bb86fc; --text: #ffffff; --danger: #cf6679; --warning: #f1c40f; }
         body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
         .screen { display: none; }
         .screen.active { display: block; }
@@ -21,7 +21,10 @@
         .shift-history { background: #2a2a2a; padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 14px; border-left: 4px solid var(--primary); }
         .shift-history.callout { border-left: 4px solid var(--secondary); }
         .shift-history-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-        .btn-del { width: 40px; padding: 5px; margin: 0; background: var(--danger); color: #fff; font-size: 12px; border-radius: 4px; }
+        .btn-group { display: flex; gap: 5px; }
+        .btn-small { width: 40px; padding: 5px; margin: 0; color: #000; font-size: 12px; border-radius: 4px; text-align: center; }
+        .btn-del { background: var(--danger); color: #fff; }
+        .btn-edit { background: var(--warning); }
     </style>
 </head>
 <body>
@@ -58,9 +61,9 @@
         <button onclick="nav('screen-menu')">Скасувати</button>
     </div>
 
-    <!-- ДОДАТИ ВИХІДНИЙ -->
+    <!-- ДОДАТИ/РЕДАГУВАТИ ВИХІДНИЙ -->
     <div id="screen-callout" class="screen">
-        <div class="header" style="color: var(--secondary);">Вихід поза зміною</div>
+        <div class="header" id="callout-header" style="color: var(--secondary);">Вихід поза зміною</div>
         <label>Дата виходу:</label>
         <input type="date" id="callout-date">
         <label>Сума доплати за цей вихід (грн):</label>
@@ -69,9 +72,9 @@
         <button onclick="nav('screen-menu')">Скасувати</button>
     </div>
 
-    <!-- ДОДАТИ ЗМІНУ: ПР -->
+    <!-- ДОДАТИ/РЕДАГУВАТИ ЗМІНУ: ПР -->
     <div id="screen-pr" class="screen">
-        <div class="header">Крок 1: Дата та ПР</div>
+        <div class="header" id="shift-header">Крок 1: Дата та ПР</div>
         <label>Дата зміни:</label>
         <input type="date" id="shift-date">
         <label>Хвилин ПР (можна через +, напр. 15+30):</label>
@@ -80,7 +83,7 @@
         <button onclick="nav('screen-menu')">Скасувати</button>
     </div>
 
-    <!-- ДОДАТИ ЗМІНУ: ДОПИ -->
+    <!-- ДОДАТИ/РЕДАГУВАТИ ЗМІНУ: ДОПИ -->
     <div id="screen-extras" class="screen">
         <div class="header">Крок 2: Доп. активності</div>
         <div id="current-extras-list" class="card" style="display:none;"></div>
@@ -119,12 +122,12 @@
     if (typeof db.pr_rate === 'undefined') db.pr_rate = 150;
     if (typeof db.tax_percent === 'undefined') db.tax_percent = (db.is_official !== false) ? 19.5 : 0;
     if (typeof db.fixed_deduction === 'undefined') db.fixed_deduction = 0;
-    if (typeof db.callout_tariff !== 'undefined') delete db.callout_tariff;
-    
     if (typeof db.shifts === 'undefined') db.shifts = [];
     if (typeof db.call_outs === 'undefined') db.call_outs = [];
 
     let currentShift = { date: '', pr_minutes: 0, extras: [] };
+    let editShiftIndex = -1;
+    let editCalloutIndex = -1;
 
     const BONUS = 2000;
 
@@ -162,10 +165,21 @@
         nav('screen-menu');
     }
 
-    // ЛОГІКА ВИКЛИКУ ПОЗА ЗМІНОЮ
+    // ВИКЛИКИ
     function openCalloutScreen() {
+        editCalloutIndex = -1;
+        document.getElementById('callout-header').innerText = "Вихід поза зміною";
         document.getElementById('callout-date').value = new Date().toISOString().split('T')[0];
         document.getElementById('callout-amount').value = '';
+        nav('screen-callout');
+    }
+
+    function editCallout(index) {
+        editCalloutIndex = index;
+        let c = db.call_outs[index];
+        document.getElementById('callout-header').innerText = "Редагування виходу";
+        document.getElementById('callout-date').value = c.date || '';
+        document.getElementById('callout-amount').value = c.amount || '';
         nav('screen-callout');
     }
 
@@ -173,12 +187,27 @@
         let amount = parseFloat(document.getElementById('callout-amount').value) || 0;
         if (amount <= 0) return alert("Введи коректну суму.");
         
-        db.call_outs.push({
+        let newCallout = {
             date: document.getElementById('callout-date').value,
             amount: amount
-        });
+        };
+
+        if (editCalloutIndex > -1) {
+            db.call_outs[editCalloutIndex] = newCallout;
+            editCalloutIndex = -1;
+        } else {
+            db.call_outs.push(newCallout);
+        }
+        
         saveDB();
-        nav('screen-menu');
+        
+        // Якщо зберігали під час перегляду підсумків, повертаємось туди
+        if (document.getElementById('screen-summary').classList.contains('was-active')) {
+             calcSummary();
+             nav('screen-summary');
+        } else {
+             nav('screen-menu');
+        }
     }
 
     function deleteCallout(index) {
@@ -189,10 +218,27 @@
         }
     }
 
-    // ЛОГІКА ЗВИЧАЙНОЇ ЗМІНИ
+    // ЗМІНИ
     function openShiftScreen() {
+        editShiftIndex = -1;
+        document.getElementById('shift-header').innerText = "Крок 1: Дата та ПР";
         document.getElementById('shift-date').value = new Date().toISOString().split('T')[0];
         document.getElementById('shift-pr').value = '';
+        currentShift = { date: '', pr_minutes: 0, extras: [] };
+        nav('screen-pr');
+    }
+
+    function editShift(index) {
+        editShiftIndex = index;
+        let s = db.shifts[index];
+        document.getElementById('shift-header').innerText = "Редагування: Дата та ПР";
+        document.getElementById('shift-date').value = s.date || '';
+        document.getElementById('shift-pr').value = s.pr_minutes || 0;
+        
+        // Копіюємо зміну, щоб не міняти оригінал до натискання "Зберегти"
+        currentShift = JSON.parse(JSON.stringify(s));
+        if (!currentShift.extras) currentShift.extras = [];
+        
         nav('screen-pr');
     }
 
@@ -205,9 +251,8 @@
                 prSum += parseInt(num) || 0;
             });
         }
-        
         currentShift.pr_minutes = prSum;
-        currentShift.extras = [];
+        
         renderCurrentExtras();
         document.getElementById('extra-name').value = '';
         document.getElementById('extra-amount').value = '';
@@ -231,12 +276,28 @@
             list.style.display = 'none';
         } else {
             list.style.display = 'block';
-            list.innerHTML = currentShift.extras.map(e => `<div>${e.name}: ${e.amount} грн</div>`).join('');
+            list.innerHTML = currentShift.extras.map((e, i) => `
+                <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                    <span>${e.name}: ${e.amount} грн</span>
+                    <button class="btn-small btn-del" onclick="removeExtra(${i})">❌</button>
+                </div>
+            `).join('');
         }
     }
 
+    function removeExtra(index) {
+        currentShift.extras.splice(index, 1);
+        renderCurrentExtras();
+    }
+
     function saveShift() {
-        db.shifts.push(JSON.parse(JSON.stringify(currentShift)));
+        if (editShiftIndex > -1) {
+            db.shifts[editShiftIndex] = JSON.parse(JSON.stringify(currentShift));
+            editShiftIndex = -1;
+        } else {
+            db.shifts.push(JSON.parse(JSON.stringify(currentShift)));
+        }
+        
         saveDB();
         nav('screen-menu');
     }
@@ -280,7 +341,10 @@
             <div class="shift-history">
                 <div class="shift-history-header">
                     <b>${dateText}</b>
-                    <button class="btn-del" onclick="deleteShift(${index})">❌</button>
+                    <div class="btn-group">
+                        <button class="btn-small btn-edit" onclick="editShift(${index})">✏️</button>
+                        <button class="btn-small btn-del" onclick="deleteShift(${index})">❌</button>
+                    </div>
                 </div>
                 <div>ПР: ${pr} хв | Допи: ${extSum} грн ${extText}</div>
             </div>`;
@@ -294,7 +358,10 @@
             <div class="shift-history callout">
                 <div class="shift-history-header">
                     <b style="color: var(--secondary);">${dateText} (Поза зміною)</b>
-                    <button class="btn-del" onclick="deleteCallout(${index})">❌</button>
+                    <div class="btn-group">
+                        <button class="btn-small btn-edit" onclick="editCallout(${index})">✏️</button>
+                        <button class="btn-small btn-del" onclick="deleteCallout(${index})">❌</button>
+                    </div>
                 </div>
                 <div>Сума: ${c.amount} грн</div>
             </div>`;
